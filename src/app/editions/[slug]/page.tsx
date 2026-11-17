@@ -1,0 +1,6 @@
+import { notFound } from 'next/navigation';
+import type { Metadata } from 'next';
+import { editions,getEdition } from '@/lib/editions';
+export function generateStaticParams(){return editions.map(e=>({slug:e.slug}))}
+export async function generateMetadata({params}:{params:Promise<{slug:string}>}):Promise<Metadata>{const {slug}=await params;const edition=getEdition(slug);return {title:edition?.name??'Edition not found'}}
+export default async function EditionPage({params}:{params:Promise<{slug:string}>}){const {slug}=await params;const edition=getEdition(slug);if(!edition)notFound();return <main className="shell"><section className="detail"><span className="eyebrow">{edition.tier} Edition / {edition.category}</span><h1>{edition.name}</h1><p>{edition.description}</p><div className="art" style={{background:edition.background,maxWidth:720,marginTop:35}}><div className="art-inner" style={{color:edition.foreground}}><span>{edition.category}</span><strong>{edition.displayTitle}</strong><span>Independent by design</span></div></div><div className="notice"><strong>Concept preview</strong><p style={{fontSize:14,marginBottom:0}}>This Edition is a design placeholder, not yet available to purchase. Pricing, inventory, customization, and checkout are intentionally disabled.</p></div></section></main>}

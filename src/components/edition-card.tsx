@@ -1,0 +1,3 @@
+import Link from 'next/link';
+import type { Edition } from '@/lib/editions';
+export function EditionCard({edition}:{edition:Edition}){return <Link className="edition" href={`/editions/${edition.slug}`}><div className="art" style={{background:edition.background}}><div className="art-inner" style={{color:edition.foreground}}><span>{edition.category}</span><strong>{edition.displayTitle}</strong><span>Independent by design</span></div></div><div className="editioninfo"><div><span className="eyebrow">{edition.tier} edition</span><h3>{edition.name}</h3><span className="muted">{edition.category}</span></div><span aria-hidden>↗</span></div></Link>}
