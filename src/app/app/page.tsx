@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { editions } from '../../lib/editions';
 
+type Revision = { id: string; created_at: string };
+
 type Draft = { edition: string; business: string; headline: string; description: string; email: string; phone: string; booking: string; palette: number };
 
 const palettes = [
@@ -22,6 +24,54 @@ export default function CustomerArea() {
   const [ready, setReady] = useState(false);
   const [saved, setSaved] = useState('');
   const [saving, setSaving] = useState(false);
+  const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [selectedRevision, setSelectedRevision] = useState('');
+  const [restoring, setRestoring] = useState(false);
+
+  async function loadRevisions() {
+    try {
+      const response = await fetch('/api/draft/revisions', {
+        cache: 'no-store'
+      });
+
+      if (!response.ok) throw new Error('Unable to load history');
+
+      const data = await response.json();
+      setRevisions(data.revisions ?? []);
+    } catch {
+      setSaved('Unable to load version history');
+    }
+  }
+
+  async function restoreRevision() {
+    if (!selectedRevision || restoring || saving) return;
+
+    if (!window.confirm(
+      'Restore this version? Your current draft will be replaced, and the restored version will be saved in history.'
+    )) return;
+
+    setRestoring(true);
+    setSaved('Restoring version...');
+
+    try {
+      const response = await fetch('/api/draft/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ revisionId: selectedRevision })
+      });
+
+      if (!response.ok) throw new Error('Restore failed');
+
+      const data = await response.json();
+      setDraft(data.draft);
+      setSaved('Previous version restored');
+      await loadRevisions();
+    } catch {
+      setSaved('Unable to restore version');
+    } finally {
+      setRestoring(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -67,6 +117,7 @@ export default function CustomerArea() {
 
       if (!response.ok) throw new Error('Save failed');
       setSaved('Saved to your account');
+      void loadRevisions();
     } catch {
       setSaved('Unable to save. Please try again.');
     } finally {
@@ -94,6 +145,31 @@ export default function CustomerArea() {
         <label>Phone (optional)<input type="tel" value={draft.phone} onChange={e => change('phone', e.target.value)} placeholder="+1 555 555 5555" /></label>
         <label>External booking URL (optional)<input type="url" value={draft.booking} onChange={e => change('booking', e.target.value)} placeholder="https://example.com/book" /></label>
         <div className="editor-actions"><button type="button" onClick={save} disabled={!ready || saving}>Save draft</button><button type="button" className="secondary-action" onClick={reset}>Reset draft</button></div>
+        <div className="version-history">
+          <label>
+            Version history
+            <select
+              value={selectedRevision}
+              onFocus={() => { void loadRevisions(); }}
+              onChange={e => setSelectedRevision(e.target.value)}
+            >
+              <option value="">Select a saved version</option>
+              {revisions.map(revision => (
+                <option key={revision.id} value={revision.id}>
+                  {new Date(revision.created_at).toLocaleString()}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="secondary-action"
+            disabled={!selectedRevision || restoring || saving || !ready}
+            onClick={() => { void restoreRevision(); }}
+          >
+            {restoring ? 'Restoring...' : 'Restore selected version'}
+          </button>
+        </div>
         <p className="editor-status" role="status">{saved || 'Changes appear immediately in the preview.'}</p>
       </section>
       <section className="preview-column" aria-label="Live website preview"><div className="preview-label"><strong>Live preview</strong><span>Not published</span></div><div className="website-preview" style={{background: colors.background, color: colors.foreground}}>
