@@ -111,8 +111,8 @@ export async function PUT(request: Request) {
 
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO public.websites
-           (owner_clerk_user_id, edition_id, name, draft_content)
-         VALUES ($1, $2, $3, $4::jsonb)
+           (owner_clerk_user_id, edition_id, name, draft_content, version)
+         VALUES ($1, $2, $3, $4::jsonb, 1)
          RETURNING id`,
         [userId, draft.edition, draft.business, JSON.stringify(draft)]
       );
