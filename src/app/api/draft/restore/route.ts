@@ -57,8 +57,9 @@ export async function POST(request: Request) {
     const result = await client.query<{
       website_id: string;
       content: unknown;
+      version: string;
     }>(
-      `SELECT r.website_id, r.content
+      `SELECT r.website_id, r.content, w.version
        FROM public.website_revisions r
        JOIN public.websites w ON w.id = r.website_id
        WHERE r.id = $1::uuid
@@ -82,7 +83,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { website_id: websiteId, content } = result.rows[0];
+    const { website_id: websiteId, content, version } = result.rows[0];
 
     if (!validDraft(content)) {
       await client.query('ROLLBACK');
@@ -97,7 +98,8 @@ export async function POST(request: Request) {
        SET edition_id = $2,
            name = $3,
            draft_content = $4::jsonb,
-           updated_at = now()
+           updated_at = now(),
+           version = version + 1
        WHERE id = $1 AND owner_clerk_user_id = $5`,
       [
         websiteId,
@@ -118,7 +120,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       restored: true,
-      draft: content
+      draft: content,
+      version: Number(version) + 1
     });
   } catch {
     await client.query('ROLLBACK').catch(() => {});

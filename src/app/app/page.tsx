@@ -24,6 +24,8 @@ export default function CustomerArea() {
   const [ready, setReady] = useState(false);
   const [saved, setSaved] = useState('');
   const [saving, setSaving] = useState(false);
+  const [version, setVersion] = useState(0);
+  const [conflict, setConflict] = useState(false);
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [selectedRevision, setSelectedRevision] = useState('');
   const [restoring, setRestoring] = useState(false);
@@ -64,6 +66,8 @@ export default function CustomerArea() {
 
       const data = await response.json();
       setDraft(data.draft);
+      setVersion(data.version);
+      setConflict(false);
       setSaved('Previous version restored');
       await loadRevisions();
     } catch {
@@ -82,6 +86,7 @@ export default function CustomerArea() {
         if (!response.ok) throw new Error('Cloud draft unavailable');
 
         const data = await response.json();
+        if (active) setVersion(data.version ?? 0);
         if (active && data.draft && editions.some(e => e.slug === data.draft.edition)) {
           setDraft({ ...initial, ...data.draft });
           setSaved('Cloud draft loaded');
@@ -103,7 +108,7 @@ export default function CustomerArea() {
   }
 
   async function save() {
-    if (!ready || saving) return;
+    if (!ready || saving || restoring || conflict) return;
 
     setSaving(true);
     setSaved('Saving...');
@@ -112,10 +117,17 @@ export default function CustomerArea() {
       const response = await fetch('/api/draft', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft),
+        body: JSON.stringify({ draft, expectedVersion: version }),
       });
 
+      if (response.status === 409) {
+        setConflict(true);
+        setSaved('Save conflict: another tab has saved a newer version. Your edits are still here. Copy any changes you want to keep before refreshing.');
+        return;
+      }
       if (!response.ok) throw new Error('Save failed');
+      const result = await response.json();
+      setVersion(result.version);
       setSaved('Saved to your account');
       void loadRevisions();
     } catch {
@@ -144,7 +156,7 @@ export default function CustomerArea() {
         <label>Email (optional)<input type="email" value={draft.email} onChange={e => change('email', e.target.value)} placeholder="hello@example.com" /></label>
         <label>Phone (optional)<input type="tel" value={draft.phone} onChange={e => change('phone', e.target.value)} placeholder="+1 555 555 5555" /></label>
         <label>External booking URL (optional)<input type="url" value={draft.booking} onChange={e => change('booking', e.target.value)} placeholder="https://example.com/book" /></label>
-        <div className="editor-actions"><button type="button" onClick={save} disabled={!ready || saving}>Save draft</button><button type="button" className="secondary-action" onClick={reset}>Reset draft</button></div>
+        <div className="editor-actions"><button type="button" onClick={save} disabled={!ready || saving || restoring || conflict}>Save draft</button><button type="button" className="secondary-action" onClick={reset}>Reset draft</button></div>
         <div className="version-history">
           <label>
             Version history
