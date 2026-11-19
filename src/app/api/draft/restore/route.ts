@@ -16,10 +16,12 @@ export async function POST(request: Request) {
   }
 
   let revisionId: unknown;
+  let expectedVersion: unknown;
 
   try {
     const body = await request.json();
     revisionId = body?.revisionId;
+    expectedVersion = body?.expectedVersion;
   } catch {
     return NextResponse.json(
       { error: 'Invalid JSON' },
@@ -28,6 +30,9 @@ export async function POST(request: Request) {
   }
 
   if (
+    typeof expectedVersion !== 'number' ||
+    !Number.isSafeInteger(expectedVersion) ||
+    expectedVersion < 0 ||
     typeof revisionId !== 'string' ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(revisionId)
   ) {
@@ -84,6 +89,14 @@ export async function POST(request: Request) {
     }
 
     const { website_id: websiteId, content, version } = result.rows[0];
+
+    if (Number(version) !== expectedVersion) {
+      await client.query('ROLLBACK');
+      return NextResponse.json(
+        { error: 'Version conflict' },
+        { status: 409 }
+      );
+    }
 
     if (!validDraft(content)) {
       await client.query('ROLLBACK');

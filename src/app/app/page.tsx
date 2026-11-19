@@ -22,6 +22,7 @@ function safeHref(kind: 'email'|'phone'|'booking', value: string) {
 export default function CustomerArea() {
   const [draft, setDraft] = useState<Draft>(initial);
   const [ready, setReady] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saved, setSaved] = useState('');
   const [saving, setSaving] = useState(false);
   const [version, setVersion] = useState(0);
@@ -46,7 +47,7 @@ export default function CustomerArea() {
   }
 
   async function restoreRevision() {
-    if (!selectedRevision || restoring || saving) return;
+    if (!ready || loadFailed || conflict || !selectedRevision || restoring || saving) return;
 
     if (!window.confirm(
       'Restore this version? Your current draft will be replaced, and the restored version will be saved in history.'
@@ -59,9 +60,14 @@ export default function CustomerArea() {
       const response = await fetch('/api/draft/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ revisionId: selectedRevision })
+        body: JSON.stringify({ revisionId: selectedRevision, expectedVersion: version })
       });
 
+      if (response.status === 409) {
+        setConflict(true);
+        setSaved('Restore conflict: another tab has saved a newer version. Your edits are still here. Copy any changes you want to keep before refreshing.');
+        return;
+      }
       if (!response.ok) throw new Error('Restore failed');
 
       const data = await response.json();
@@ -86,13 +92,25 @@ export default function CustomerArea() {
         if (!response.ok) throw new Error('Cloud draft unavailable');
 
         const data = await response.json();
-        if (active) setVersion(data.version ?? 0);
+        if (!Number.isSafeInteger(data.version) || data.version < 0) {
+          throw new Error('Invalid cloud version');
+        }
+        if (data.draft !== null && (
+          !data.draft ||
+          !editions.some(e => e.slug === data.draft.edition)
+        )) {
+          throw new Error('Invalid cloud draft');
+        }
+        if (active) setVersion(data.version);
         if (active && data.draft && editions.some(e => e.slug === data.draft.edition)) {
           setDraft({ ...initial, ...data.draft });
           setSaved('Cloud draft loaded');
         }
       } catch {
-        if (active) setSaved('Unable to load cloud draft');
+        if (active) {
+          setLoadFailed(true);
+          setSaved('Unable to load cloud draft. Saving is disabled to protect your existing work. Refresh to retry.');
+        }
       } finally {
         if (active) setReady(true);
       }
@@ -108,7 +126,7 @@ export default function CustomerArea() {
   }
 
   async function save() {
-    if (!ready || saving || restoring || conflict) return;
+    if (!ready || loadFailed || saving || restoring || conflict) return;
 
     setSaving(true);
     setSaved('Saving...');
@@ -156,7 +174,7 @@ export default function CustomerArea() {
         <label>Email (optional)<input type="email" value={draft.email} onChange={e => change('email', e.target.value)} placeholder="hello@example.com" /></label>
         <label>Phone (optional)<input type="tel" value={draft.phone} onChange={e => change('phone', e.target.value)} placeholder="+1 555 555 5555" /></label>
         <label>External booking URL (optional)<input type="url" value={draft.booking} onChange={e => change('booking', e.target.value)} placeholder="https://example.com/book" /></label>
-        <div className="editor-actions"><button type="button" onClick={save} disabled={!ready || saving || restoring || conflict}>Save draft</button><button type="button" className="secondary-action" onClick={reset}>Reset draft</button></div>
+        <div className="editor-actions"><button type="button" onClick={save} disabled={!ready || loadFailed || saving || restoring || conflict}>Save draft</button><button type="button" className="secondary-action" onClick={reset}>Reset draft</button></div>
         <div className="version-history">
           <label>
             Version history
@@ -176,7 +194,7 @@ export default function CustomerArea() {
           <button
             type="button"
             className="secondary-action"
-            disabled={!selectedRevision || restoring || saving || !ready}
+            disabled={!selectedRevision || restoring || saving || !ready || loadFailed || conflict}
             onClick={() => { void restoreRevision(); }}
           >
             {restoring ? 'Restoring...' : 'Restore selected version'}
