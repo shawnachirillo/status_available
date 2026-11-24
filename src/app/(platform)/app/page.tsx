@@ -1,7 +1,15 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { editions } from '../../lib/editions';
+import { editions } from '../../../lib/editions';
+import { WebsiteRenderer } from '../../../components/website-renderer';
+import {
+  palettes,
+  type WebsiteDraft
+} from '../../../lib/websites/design';
+
+
+import { validPublicationSlug } from '../../../lib/websites/publication-slug';
 
 type Revision = { id: string; created_at: string };
 type CustomerWebsite = {
@@ -9,22 +17,13 @@ type CustomerWebsite = {
   name: string;
   edition: string;
   publication_status: string;
+  public_slug?: string | null;
+  published_draft_version?: string | null;
+  published_at?: string | null;
 };
 
-type Draft = { edition: string; business: string; headline: string; description: string; email: string; phone: string; booking: string; palette: number };
-
-const palettes = [
-  { label: 'Edition original', background: '', foreground: '', accent: '' },
-  { label: 'Ink / Ivory', background: '#f2eee5', foreground: '#23201d', accent: '#b56a43' },
-  { label: 'Clay / Plum', background: '#e9d6c9', foreground: '#482b39', accent: '#995c60' },
-];
+type Draft = WebsiteDraft;
 const initial: Draft = { edition: 'atelier', business: 'Your studio', headline: 'A quieter kind of bold.', description: 'An independent practice with a point of view.', email: '', phone: '', booking: '', palette: 0 };
-function safeHref(kind: 'email'|'phone'|'booking', value: string) {
-  if (!value.trim()) return null;
-  if (kind === 'email') return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? `mailto:${value}` : null;
-  if (kind === 'phone') return /^[+\d()\s.-]{7,25}$/.test(value) ? `tel:${value.replace(/[^+\d]/g,'')}` : null;
-  try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : null; } catch { return null; }
-}
 export default function CustomerArea() {
   const [draft, setDraft] = useState<Draft>(initial);
   const [websites, setWebsites] = useState<CustomerWebsite[]>([]);
@@ -42,11 +41,13 @@ export default function CustomerArea() {
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [selectedRevision, setSelectedRevision] = useState('');
   const [restoring, setRestoring] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publicationSlug, setPublicationSlug] = useState('');
   const mutationInFlightRef = useRef(false);
   const revisionRequestRef = useRef(0);
 
   useEffect(() => {
-    if (!dirty && !saving && !restoring) return;
+    if (!dirty && !saving && !restoring && !publishing) return;
 
     function warnBeforeUnload(event: BeforeUnloadEvent) {
       event.preventDefault();
@@ -58,7 +59,7 @@ export default function CustomerArea() {
     return () => {
       window.removeEventListener('beforeunload', warnBeforeUnload);
     };
-  }, [dirty, saving, restoring]);
+  }, [dirty, saving, restoring, publishing]);
 
   async function loadRevisions() {
     const requestedId = websiteId;
@@ -177,6 +178,7 @@ export default function CustomerArea() {
     setSelectedRevision('');
     setDraft(initial);
     setVersion(0);
+    setPublicationSlug('');
 
     async function load() {
       try {
@@ -217,6 +219,7 @@ export default function CustomerArea() {
   }, [websiteId, websitesReady]);
 
   function change<K extends keyof Draft>(key: K, value: Draft[K]) {
+    if (mutationInFlightRef.current) return;
     setDraft(d => ({ ...d, [key]: value }));
     setDirty(true); setSaved('Unsaved changes');
   }
@@ -259,7 +262,118 @@ export default function CustomerArea() {
     }
   }
 
+  async function publish() {
+    const website = websites.find(w => w.id === websiteId);
+
+    if (
+      !website ||
+      !websiteId ||
+      loadedWebsiteId !== websiteId ||
+      selectedWebsiteRef.current !== websiteId ||
+      !ready ||
+      loadFailed ||
+      conflict ||
+      dirty ||
+      saving ||
+      restoring ||
+      publishing ||
+      mutationInFlightRef.current
+    ) return;
+
+    const slug = website.public_slug || publicationSlug;
+
+    if (!validPublicationSlug(slug)) {
+      setSaved('Choose a valid website address.');
+      return;
+    }
+
+    if (
+      website.publication_status === 'published' &&
+      website.published_draft_version != null &&
+      Number(website.published_draft_version) === version
+    ) return;
+
+    const requestedId = websiteId;
+    const requestedVersion = version;
+
+    mutationInFlightRef.current = true;
+    setPublishing(true);
+    setSaved('Publishing website...');
+
+    try {
+      const response = await fetch('/api/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          websiteId: requestedId,
+          expectedVersion: requestedVersion,
+          slug
+        })
+      });
+
+      const result = await response.json();
+
+      if (selectedWebsiteRef.current !== requestedId) return;
+
+      if (!response.ok) {
+        if (
+          response.status === 409 &&
+          result.error === 'Draft has changed. Refresh before publishing.'
+        ) {
+          setConflict(true);
+          setSaved('Publication conflict: refresh to load the latest saved draft.');
+          return;
+        }
+
+        if (response.status === 404 || response.status === 403) {
+          setLoadFailed(true);
+          setSaved('Website access has changed. Refresh to continue.');
+          return;
+        }
+
+        setSaved(
+          typeof result.error === 'string'
+            ? result.error
+            : 'Unable to publish. Please try again.'
+        );
+        return;
+      }
+
+      if (
+        result.published !== true ||
+        result.websiteId !== requestedId ||
+        result.sourceDraftVersion !== requestedVersion ||
+        result.slug !== slug ||
+        !validPublicationSlug(result.slug)
+      ) {
+        throw new Error('Invalid publication response');
+      }
+
+      setWebsites(previous => previous.map(item =>
+        item.id === requestedId
+          ? {
+              ...item,
+              publication_status: 'published',
+              public_slug: result.slug,
+              published_draft_version: String(requestedVersion),
+              published_at: result.publishedAt
+            }
+          : item
+      ));
+
+      setSaved('Website published successfully.');
+    } catch {
+      if (selectedWebsiteRef.current === requestedId) {
+        setSaved('Publication could not be confirmed. Retry safely or refresh.');
+      }
+    } finally {
+      mutationInFlightRef.current = false;
+      setPublishing(false);
+    }
+  }
+
   function reset() {
+    if (mutationInFlightRef.current) return;
     if (!ready || loadFailed || loadedWebsiteId !== websiteId) return;
     const purchasedEdition = websites.find(w => w.id === websiteId)?.edition;
     setDraft({
@@ -269,10 +383,32 @@ export default function CustomerArea() {
     setDirty(true); setSaved('Unsaved changes — click Save draft to keep this reset');
   }
   const edition = editions.find(e => e.slug === draft.edition) ?? editions[0];
-  const chosen = palettes[draft.palette] ?? palettes[0];
-  const colors = chosen.background ? chosen : edition;
+
+  const currentWebsite = websites.find(w => w.id === websiteId);
+  const isPublished = currentWebsite?.publication_status === 'published';
+
+  const publicationCurrent =
+    isPublished &&
+    currentWebsite?.published_draft_version != null &&
+    Number(currentWebsite.published_draft_version) === version &&
+    !dirty;
+
+  const canPublish =
+    Boolean(currentWebsite) &&
+    ready &&
+    loadedWebsiteId === websiteId &&
+    !loadFailed &&
+    !conflict &&
+    !dirty &&
+    !saving &&
+    !restoring &&
+    !publishing &&
+    !publicationCurrent &&
+    validPublicationSlug(
+      currentWebsite?.public_slug || publicationSlug
+    );
   return <main className="shell editor-page">
-    <div className="editor-intro"><span className="eyebrow">Edition studio · account workspace</span><h1>Make it yours.</h1><p>Curated choices. A fixed composition. Preview your edits before publishing becomes available.</p><div className="notice">Development workspace: drafts are saved to your account. Purchases and live publishing are not yet available.</div></div>
+    <div className="editor-intro"><span className="eyebrow">Edition studio · account workspace</span><h1>Make it yours.</h1><p>Curated choices. A fixed composition. Save your edits, then publish when you are ready.</p><div className="notice">Development workspace: publication is available for testing. Production customer subdomains are not active.</div></div>
     <div className="editor-grid">
       {websites.length > 1 && (
         <div className="website-selector">
@@ -292,7 +428,7 @@ export default function CustomerArea() {
                 setLoadedWebsiteId('');
                 setWebsiteId(event.target.value);
               }}
-              disabled={saving || restoring}
+              disabled={saving || restoring || publishing}
             >
               {websites.map(website => (
                 <option key={website.id} value={website.id}>
@@ -305,7 +441,7 @@ export default function CustomerArea() {
       )}
       <section className="editor-controls" aria-label="Website settings">
         <fieldset
-          disabled={!ready || loadFailed || loadedWebsiteId !== websiteId || saving || restoring}
+          disabled={!ready || loadFailed || loadedWebsiteId !== websiteId || saving || restoring || publishing}
           style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}
         >
         <label>Purchased Edition<input value={edition.name} readOnly /></label>
@@ -317,6 +453,79 @@ export default function CustomerArea() {
         <label>Phone (optional)<input type="tel" value={draft.phone} onChange={e => change('phone', e.target.value)} placeholder="+1 555 555 5555" /></label>
         <label>External booking URL (optional)<input type="url" value={draft.booking} onChange={e => change('booking', e.target.value)} placeholder="https://example.com/book" /></label>
         <div className="editor-actions"><button type="button" onClick={save} disabled={!websiteId || !ready || loadFailed || saving || restoring || conflict}>Save draft</button><button type="button" className="secondary-action" onClick={reset}>Reset draft</button></div>
+        <div className="publication-panel">
+          <span className="eyebrow">Publication</span>
+
+          <h2>
+            {publicationCurrent
+              ? 'Your website is published.'
+              : isPublished
+                ? 'Update your website.'
+                : 'Ready to publish?'}
+          </h2>
+
+          {currentWebsite?.public_slug ? (
+            <div className="publication-address">
+              <span>Website address</span>
+              <strong>
+                {currentWebsite.public_slug}.status-available.com
+              </strong>
+            </div>
+          ) : (
+            <label>
+              Website address
+              <div className="publication-address-input">
+                <input
+                  value={publicationSlug}
+                  maxLength={63}
+                  placeholder="your-studio"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={event =>
+                    setPublicationSlug(event.target.value.toLowerCase())
+                  }
+                />
+                <span>.status-available.com</span>
+              </div>
+            </label>
+          )}
+
+          <p className="publication-description">
+            {dirty
+              ? 'Save your draft before publishing.'
+              : publicationCurrent
+                ? 'Your saved draft matches the published website.'
+                : isPublished
+                  ? 'Saved changes are not visible to visitors until you publish.'
+                  : 'Publishing creates a separate public version of your saved draft.'}
+          </p>
+
+          <div className="editor-actions">
+            <button
+              type="button"
+              disabled={!canPublish}
+              onClick={() => { void publish(); }}
+            >
+              {publishing
+                ? 'Publishing...'
+                : isPublished
+                  ? 'Publish changes'
+                  : 'Publish website'}
+            </button>
+          </div>
+
+          {isPublished &&
+            validPublicationSlug(currentWebsite?.public_slug) && (
+              <a
+                className="publication-preview-link"
+                href={'/sites/' + currentWebsite.public_slug}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                View published test website ↗
+              </a>
+            )}
+        </div>
         <div className="version-history">
           <label>
             Version history
@@ -345,11 +554,22 @@ export default function CustomerArea() {
         <p className="editor-status" role="status">{saved || 'Changes appear immediately in the preview.'}</p>
         </fieldset>
       </section>
-      <section className="preview-column" aria-label="Live website preview"><div className="preview-label"><strong>Live preview</strong><span>Not published</span></div><div className="website-preview" style={{background: colors.background, color: colors.foreground}}>
-        <div className="preview-top"><span>{draft.business || 'Your studio'}</span><span>{edition.category}</span></div>
-        <div className="preview-body"><span className="preview-kicker">{edition.name} / {edition.tier}</span><h2>{draft.headline || 'Your headline'}</h2><p>{draft.description || 'Your introduction goes here.'}</p><div className="preview-accent" style={{background: colors.accent}} /></div>
-        <div className="preview-bottom">{safeHref('email',draft.email) && <a href={safeHref('email',draft.email)!}>Email</a>}{safeHref('phone',draft.phone) && <a href={safeHref('phone',draft.phone)!}>Call</a>}{safeHref('booking',draft.booking) && <a href={safeHref('booking',draft.booking)!} target="_blank" rel="noopener noreferrer">Book</a>}</div>
-      </div></section>
+      <section
+        className="preview-column"
+        aria-label="Live website preview"
+      >
+        <div className="preview-label">
+          <strong>Live preview</strong>
+          <span>
+            {publicationCurrent
+              ? 'Published version'
+              : isPublished
+                ? 'Draft changes'
+                : 'Not published'}
+          </span>
+        </div>
+        <WebsiteRenderer draft={draft} preview />
+      </section>
     </div>
   </main>;
 }

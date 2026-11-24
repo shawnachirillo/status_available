@@ -8,7 +8,7 @@ import {
   render, screen, fireEvent, waitFor, act, cleanup
 } from '@testing-library/react';
 
-import CustomerArea from '../src/app/app/page';
+import CustomerArea from '../src/app/(platform)/app/page';
 import { editions } from '../src/lib/editions';
 
 const A = '11111111-1111-4111-8111-111111111111';

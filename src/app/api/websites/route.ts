@@ -20,12 +20,18 @@ export async function GET() {
       name: string;
       edition: string;
       publication_status: string;
+      public_slug: string | null;
+      published_draft_version: string | null;
+      published_at: Date | null;
     }>(
       `SELECT
          w.id,
          w.name,
          w.edition_id AS edition,
-         w.publication_status
+         w.publication_status,
+         w.public_slug,
+         s.source_draft_version AS published_draft_version,
+         s.published_at
        FROM public.websites w
        JOIN public.entitlements e
          ON e.id = w.entitlement_id
@@ -38,6 +44,9 @@ export async function GET() {
        JOIN public.edition_catalog ec
          ON ec.id = w.edition_catalog_id
         AND ec.slug = w.edition_id
+       LEFT JOIN public.website_publications s
+         ON s.id = w.current_publication_id
+        AND s.website_id = w.id
        WHERE w.owner_clerk_user_id = $1
          AND e.status = 'active'
          AND p.status = 'paid'

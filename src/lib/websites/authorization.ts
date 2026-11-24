@@ -53,8 +53,8 @@ export async function findEditableWebsite(
        AND e.status = 'active'
        AND p.status = 'paid'
        AND w.publication_status IN ('draft', 'published')
-       AND w.hosting_starts_at <= now()
-       AND w.hosting_ends_at > now()
+       AND w.hosting_starts_at <= clock_timestamp()
+       AND w.hosting_ends_at > clock_timestamp()
      ${lock ? 'FOR UPDATE OF w' : ''}
      LIMIT 1`,
     [websiteId, userId]
