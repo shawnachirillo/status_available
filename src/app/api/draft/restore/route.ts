@@ -2,6 +2,10 @@ import { auth } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
 import { getDb } from '../../../../lib/db';
 import { validDraft } from '../../../../lib/draft-validation';
+import {
+  findEditableWebsite,
+  validWebsiteId
+} from '../../../../lib/websites/authorization';
 
 export const runtime = 'nodejs';
 
@@ -15,13 +19,10 @@ export async function POST(request: Request) {
     );
   }
 
-  let revisionId: unknown;
-  let expectedVersion: unknown;
+  let body: unknown;
 
   try {
-    const body = await request.json();
-    revisionId = body?.revisionId;
-    expectedVersion = body?.expectedVersion;
+    body = await request.json();
   } catch {
     return NextResponse.json(
       { error: 'Invalid JSON' },
@@ -29,15 +30,28 @@ export async function POST(request: Request) {
     );
   }
 
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json(
+      { error: 'Invalid request' },
+      { status: 400 }
+    );
+  }
+
+  const {
+    websiteId,
+    revisionId,
+    expectedVersion
+  } = body as Record<string, unknown>;
+
   if (
+    !validWebsiteId(websiteId) ||
+    !validWebsiteId(revisionId) ||
     typeof expectedVersion !== 'number' ||
     !Number.isSafeInteger(expectedVersion) ||
-    expectedVersion < 0 ||
-    typeof revisionId !== 'string' ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(revisionId)
+    expectedVersion < 0
   ) {
     return NextResponse.json(
-      { error: 'Invalid revision ID' },
+      { error: 'Invalid restore request' },
       { status: 400 }
     );
   }
@@ -54,78 +68,95 @@ export async function POST(request: Request) {
   try {
     await client.query('BEGIN');
 
-    await client.query(
-      'SELECT pg_advisory_xact_lock(hashtext($1))',
-      [userId]
+    const website = await findEditableWebsite(
+      client,
+      websiteId,
+      userId,
+      true
     );
 
-    const result = await client.query<{
-      website_id: string;
-      content: unknown;
-      version: string;
-    }>(
-      `SELECT r.website_id, r.content, w.version
-       FROM public.website_revisions r
-       JOIN public.websites w ON w.id = r.website_id
-       WHERE r.id = $1::uuid
-         AND w.owner_clerk_user_id = $2
-         AND w.id = (
-           SELECT id
-           FROM public.websites
-           WHERE owner_clerk_user_id = $2
-           ORDER BY updated_at DESC, id DESC
-           LIMIT 1
-         )
-       FOR UPDATE OF w`,
-      [revisionId, userId]
-    );
-
-    if (!result.rows.length) {
+    if (!website) {
       await client.query('ROLLBACK');
+
       return NextResponse.json(
-        { error: 'Revision not found' },
+        { error: 'Website not found' },
         { status: 404 }
       );
     }
 
-    const { website_id: websiteId, content, version } = result.rows[0];
-
-    if (Number(version) !== expectedVersion) {
+    if (Number(website.version) !== expectedVersion) {
       await client.query('ROLLBACK');
+
       return NextResponse.json(
         { error: 'Version conflict' },
         { status: 409 }
       );
     }
 
+    const revision = await client.query<{ content: unknown }>(
+      `SELECT content
+       FROM public.website_revisions
+       WHERE id = $1::uuid
+         AND website_id = $2::uuid`,
+      [revisionId, websiteId]
+    );
+
+    if (revision.rows.length !== 1) {
+      await client.query('ROLLBACK');
+
+      return NextResponse.json(
+        { error: 'Revision not found' },
+        { status: 404 }
+      );
+    }
+
+    const content = revision.rows[0].content;
+
     if (!validDraft(content)) {
       await client.query('ROLLBACK');
+
       return NextResponse.json(
         { error: 'Stored revision is invalid' },
         { status: 422 }
       );
     }
 
-    await client.query(
+    if (content.edition !== website.edition_id) {
+      await client.query('ROLLBACK');
+
+      return NextResponse.json(
+        { error: 'Revision Edition does not match purchase' },
+        { status: 403 }
+      );
+    }
+
+    const updated = await client.query(
       `UPDATE public.websites
-       SET edition_id = $2,
-           name = $3,
-           draft_content = $4::jsonb,
-           updated_at = now(),
-           version = version + 1
-       WHERE id = $1 AND owner_clerk_user_id = $5`,
+       SET name = $2,
+           draft_content = $3::jsonb,
+           version = version + 1,
+           updated_at = now()
+       WHERE id = $1::uuid
+         AND owner_clerk_user_id = $4
+         AND version = $5
+       RETURNING id`,
       [
         websiteId,
-        content.edition,
         content.business,
         JSON.stringify(content),
-        userId
+        userId,
+        expectedVersion
       ]
     );
 
+    if (updated.rowCount !== 1) {
+      throw new Error('Website restore was not confirmed');
+    }
+
     await client.query(
-      `INSERT INTO public.website_revisions (website_id, content)
-       VALUES ($1, $2::jsonb)`,
+      `INSERT INTO public.website_revisions
+         (website_id, content)
+       VALUES ($1::uuid, $2::jsonb)`,
       [websiteId, JSON.stringify(content)]
     );
 
@@ -133,8 +164,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       restored: true,
+      websiteId,
       draft: content,
-      version: Number(version) + 1
+      version: expectedVersion + 1
     });
   } catch {
     await client.query('ROLLBACK').catch(() => {});

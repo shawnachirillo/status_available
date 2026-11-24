@@ -1,9 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { editions } from '../../lib/editions';
 
 type Revision = { id: string; created_at: string };
+type CustomerWebsite = {
+  id: string;
+  name: string;
+  edition: string;
+  publication_status: string;
+};
 
 type Draft = { edition: string; business: string; headline: string; description: string; email: string; phone: string; booking: string; palette: number };
 
@@ -21,6 +27,12 @@ function safeHref(kind: 'email'|'phone'|'booking', value: string) {
 }
 export default function CustomerArea() {
   const [draft, setDraft] = useState<Draft>(initial);
+  const [websites, setWebsites] = useState<CustomerWebsite[]>([]);
+  const [websiteId, setWebsiteId] = useState('');
+  const [dirty, setDirty] = useState(false);
+  const selectedWebsiteRef = useRef('');
+  const [loadedWebsiteId, setLoadedWebsiteId] = useState('');
+  const [websitesReady, setWebsitesReady] = useState(false);
   const [ready, setReady] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [saved, setSaved] = useState('');
@@ -30,29 +42,63 @@ export default function CustomerArea() {
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [selectedRevision, setSelectedRevision] = useState('');
   const [restoring, setRestoring] = useState(false);
+  const mutationInFlightRef = useRef(false);
+  const revisionRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!dirty && !saving && !restoring) return;
+
+    function warnBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+
+    window.addEventListener('beforeunload', warnBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', warnBeforeUnload);
+    };
+  }, [dirty, saving, restoring]);
 
   async function loadRevisions() {
+    const requestedId = websiteId;
+    const requestNumber = ++revisionRequestRef.current;
+    if (!requestedId || loadedWebsiteId !== requestedId ||
+        selectedWebsiteRef.current !== requestedId) return;
     try {
-      const response = await fetch('/api/draft/revisions', {
+      const response = await fetch('/api/draft/revisions?websiteId=' + encodeURIComponent(websiteId), {
         cache: 'no-store'
       });
 
       if (!response.ok) throw new Error('Unable to load history');
 
       const data = await response.json();
-      setRevisions(data.revisions ?? []);
+      if (
+        selectedWebsiteRef.current === requestedId &&
+        revisionRequestRef.current === requestNumber
+      ) {
+        setRevisions(data.revisions ?? []);
+      }
     } catch {
-      setSaved('Unable to load version history');
+      if (
+        selectedWebsiteRef.current === requestedId &&
+        revisionRequestRef.current === requestNumber
+      ) {
+        setSaved('Unable to load version history');
+      }
     }
   }
 
   async function restoreRevision() {
-    if (!ready || loadFailed || conflict || !selectedRevision || restoring || saving) return;
+    if (!websiteId || loadedWebsiteId !== websiteId || selectedWebsiteRef.current !== websiteId || !ready || loadFailed || conflict || !selectedRevision || restoring || saving) return;
 
     if (!window.confirm(
       'Restore this version? Your current draft will be replaced, and the restored version will be saved in history.'
     )) return;
 
+    if (mutationInFlightRef.current) return;
+    mutationInFlightRef.current = true;
+    const requestedId = websiteId;
     setRestoring(true);
     setSaved('Restoring version...');
 
@@ -60,9 +106,10 @@ export default function CustomerArea() {
       const response = await fetch('/api/draft/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ revisionId: selectedRevision, expectedVersion: version })
+        body: JSON.stringify({ websiteId, revisionId: selectedRevision, expectedVersion: version })
       });
 
+      if (selectedWebsiteRef.current !== requestedId) return;
       if (response.status === 409) {
         setConflict(true);
         setSaved('Restore conflict: another tab has saved a newer version. Your edits are still here. Copy any changes you want to keep before refreshing.');
@@ -71,14 +118,18 @@ export default function CustomerArea() {
       if (!response.ok) throw new Error('Restore failed');
 
       const data = await response.json();
+      if (selectedWebsiteRef.current !== requestedId) return;
       setDraft(data.draft);
       setVersion(data.version);
       setConflict(false);
-      setSaved('Previous version restored');
+      setDirty(false); setSaved('Previous version restored');
       await loadRevisions();
     } catch {
-      setSaved('Unable to restore version');
+      if (selectedWebsiteRef.current === requestedId) {
+        setSaved('Unable to restore version');
+      }
     } finally {
+      mutationInFlightRef.current = false;
       setRestoring(false);
     }
   }
@@ -86,9 +137,50 @@ export default function CustomerArea() {
   useEffect(() => {
     let active = true;
 
+    async function loadWebsites() {
+      try {
+        const response = await fetch('/api/websites', { cache: 'no-store' });
+        if (!response.ok) throw new Error('Website list unavailable');
+        const data = await response.json();
+        if (!Array.isArray(data.websites)) throw new Error('Invalid website list');
+        if (!active) return;
+        const firstId = data.websites[0]?.id ?? '';
+        selectedWebsiteRef.current = firstId;
+        setWebsites(data.websites);
+        setWebsiteId(firstId);
+        if (data.websites.length === 0) {
+          setSaved('No eligible purchased website found.');
+        }
+      } catch {
+        if (active) {
+          setLoadFailed(true);
+          setSaved('Unable to load your purchased websites.');
+        }
+      } finally {
+        if (active) setWebsitesReady(true);
+      }
+    }
+
+    void loadWebsites();
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!websitesReady || !websiteId) return;
+    let active = true;
+
+    setReady(false);
+    setLoadedWebsiteId('');
+    setLoadFailed(false);
+    setConflict(false);
+    setRevisions([]);
+    setSelectedRevision('');
+    setDraft(initial);
+    setVersion(0);
+
     async function load() {
       try {
-        const response = await fetch('/api/draft', { cache: 'no-store' });
+        const response = await fetch('/api/draft?websiteId=' + encodeURIComponent(websiteId), { cache: 'no-store' });
         if (!response.ok) throw new Error('Cloud draft unavailable');
 
         const data = await response.json();
@@ -101,13 +193,17 @@ export default function CustomerArea() {
         )) {
           throw new Error('Invalid cloud draft');
         }
-        if (active) setVersion(data.version);
-        if (active && data.draft && editions.some(e => e.slug === data.draft.edition)) {
+        if (active && selectedWebsiteRef.current === websiteId) {
+          setVersion(data.version);
+          setLoadedWebsiteId(websiteId);
+        }
+        if (active && selectedWebsiteRef.current === websiteId &&
+            data.draft && editions.some(e => e.slug === data.draft.edition)) {
           setDraft({ ...initial, ...data.draft });
           setSaved('Cloud draft loaded');
         }
       } catch {
-        if (active) {
+        if (active && selectedWebsiteRef.current === websiteId) {
           setLoadFailed(true);
           setSaved('Unable to load cloud draft. Saving is disabled to protect your existing work. Refresh to retry.');
         }
@@ -118,16 +214,19 @@ export default function CustomerArea() {
 
     void load();
     return () => { active = false; };
-  }, []);
+  }, [websiteId, websitesReady]);
 
   function change<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft(d => ({ ...d, [key]: value }));
-    setSaved('Unsaved changes');
+    setDirty(true); setSaved('Unsaved changes');
   }
 
   async function save() {
-    if (!ready || loadFailed || saving || restoring || conflict) return;
+    if (!websiteId || loadedWebsiteId !== websiteId || selectedWebsiteRef.current !== websiteId || !ready || loadFailed || saving || restoring || conflict) return;
 
+    if (mutationInFlightRef.current) return;
+    mutationInFlightRef.current = true;
+    const requestedId = websiteId;
     setSaving(true);
     setSaved('Saving...');
 
@@ -135,9 +234,10 @@ export default function CustomerArea() {
       const response = await fetch('/api/draft', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ draft, expectedVersion: version }),
+        body: JSON.stringify({ websiteId, draft, expectedVersion: version }),
       });
 
+      if (selectedWebsiteRef.current !== requestedId) return;
       if (response.status === 409) {
         setConflict(true);
         setSaved('Save conflict: another tab has saved a newer version. Your edits are still here. Copy any changes you want to keep before refreshing.');
@@ -145,19 +245,28 @@ export default function CustomerArea() {
       }
       if (!response.ok) throw new Error('Save failed');
       const result = await response.json();
+      if (selectedWebsiteRef.current !== requestedId) return;
       setVersion(result.version);
-      setSaved('Saved to your account');
+      setDirty(false); setSaved('Saved to your account');
       void loadRevisions();
     } catch {
-      setSaved('Unable to save. Please try again.');
+      if (selectedWebsiteRef.current === requestedId) {
+        setSaved('Unable to save. Please try again.');
+      }
     } finally {
+      mutationInFlightRef.current = false;
       setSaving(false);
     }
   }
 
   function reset() {
-    setDraft(initial);
-    setSaved('Unsaved changes — click Save draft to keep this reset');
+    if (!ready || loadFailed || loadedWebsiteId !== websiteId) return;
+    const purchasedEdition = websites.find(w => w.id === websiteId)?.edition;
+    setDraft({
+      ...initial,
+      edition: purchasedEdition ?? draft.edition
+    });
+    setDirty(true); setSaved('Unsaved changes — click Save draft to keep this reset');
   }
   const edition = editions.find(e => e.slug === draft.edition) ?? editions[0];
   const chosen = palettes[draft.palette] ?? palettes[0];
@@ -165,8 +274,41 @@ export default function CustomerArea() {
   return <main className="shell editor-page">
     <div className="editor-intro"><span className="eyebrow">Edition studio · account workspace</span><h1>Make it yours.</h1><p>Curated choices. A fixed composition. Preview your edits before publishing becomes available.</p><div className="notice">Development workspace: drafts are saved to your account. Purchases and live publishing are not yet available.</div></div>
     <div className="editor-grid">
+      {websites.length > 1 && (
+        <div className="website-selector">
+          <label>
+            Your websites
+            <select
+              value={websiteId}
+              onChange={event => {
+                if (mutationInFlightRef.current) return;
+                if (dirty && !window.confirm(
+                  'You have unsaved changes. Switch websites and discard them?'
+                )) return;
+                setDirty(false);
+                selectedWebsiteRef.current = event.target.value;
+                revisionRequestRef.current += 1;
+                setReady(false);
+                setLoadedWebsiteId('');
+                setWebsiteId(event.target.value);
+              }}
+              disabled={saving || restoring}
+            >
+              {websites.map(website => (
+                <option key={website.id} value={website.id}>
+                  {website.name} — {website.edition}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
       <section className="editor-controls" aria-label="Website settings">
-        <label>Edition<select value={draft.edition} onChange={e => { const next = editions.find(x => x.slug === e.target.value)!; setDraft(d => ({...d, edition: next.slug, headline: next.displayTitle, palette: 0})); setSaved('Unsaved changes'); }}>{editions.map(e => <option key={e.slug} value={e.slug}>{e.name} — {e.tier}</option>)}</select></label>
+        <fieldset
+          disabled={!ready || loadFailed || loadedWebsiteId !== websiteId || saving || restoring}
+          style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}
+        >
+        <label>Purchased Edition<input value={edition.name} readOnly /></label>
         <label>Business name<input maxLength={70} value={draft.business} onChange={e => change('business', e.target.value)} /></label>
         <label>Headline<input maxLength={110} value={draft.headline} onChange={e => change('headline', e.target.value)} /></label>
         <label>Introduction<textarea rows={4} maxLength={420} value={draft.description} onChange={e => change('description', e.target.value)} /></label>
@@ -174,7 +316,7 @@ export default function CustomerArea() {
         <label>Email (optional)<input type="email" value={draft.email} onChange={e => change('email', e.target.value)} placeholder="hello@example.com" /></label>
         <label>Phone (optional)<input type="tel" value={draft.phone} onChange={e => change('phone', e.target.value)} placeholder="+1 555 555 5555" /></label>
         <label>External booking URL (optional)<input type="url" value={draft.booking} onChange={e => change('booking', e.target.value)} placeholder="https://example.com/book" /></label>
-        <div className="editor-actions"><button type="button" onClick={save} disabled={!ready || loadFailed || saving || restoring || conflict}>Save draft</button><button type="button" className="secondary-action" onClick={reset}>Reset draft</button></div>
+        <div className="editor-actions"><button type="button" onClick={save} disabled={!websiteId || !ready || loadFailed || saving || restoring || conflict}>Save draft</button><button type="button" className="secondary-action" onClick={reset}>Reset draft</button></div>
         <div className="version-history">
           <label>
             Version history
@@ -194,13 +336,14 @@ export default function CustomerArea() {
           <button
             type="button"
             className="secondary-action"
-            disabled={!selectedRevision || restoring || saving || !ready || loadFailed || conflict}
+            disabled={!websiteId || !selectedRevision || restoring || saving || !ready || loadFailed || conflict}
             onClick={() => { void restoreRevision(); }}
           >
             {restoring ? 'Restoring...' : 'Restore selected version'}
           </button>
         </div>
         <p className="editor-status" role="status">{saved || 'Changes appear immediately in the preview.'}</p>
+        </fieldset>
       </section>
       <section className="preview-column" aria-label="Live website preview"><div className="preview-label"><strong>Live preview</strong><span>Not published</span></div><div className="website-preview" style={{background: colors.background, color: colors.foreground}}>
         <div className="preview-top"><span>{draft.business || 'Your studio'}</span><span>{edition.category}</span></div>

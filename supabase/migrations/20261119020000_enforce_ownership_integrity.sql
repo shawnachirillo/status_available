@@ -48,10 +48,25 @@ ALTER TABLE public.entitlements
   UNIQUE (id, owner_clerk_user_id, edition_id);
 
 ALTER TABLE public.websites
+  ADD COLUMN edition_catalog_id uuid
+    REFERENCES public.edition_catalog(id);
+
+ALTER TABLE public.websites
   ADD CONSTRAINT websites_entitlement_edition_fk
-  FOREIGN KEY (entitlement_id, owner_clerk_user_id, edition_id)
+  FOREIGN KEY (
+    entitlement_id,
+    owner_clerk_user_id,
+    edition_catalog_id
+  )
   REFERENCES public.entitlements
     (id, owner_clerk_user_id, edition_id);
+
+ALTER TABLE public.websites
+  ADD CONSTRAINT websites_entitlement_catalog_required
+  CHECK (
+    entitlement_id IS NULL
+    OR edition_catalog_id IS NOT NULL
+  );
 
 CREATE OR REPLACE FUNCTION public.enforce_purchase_entitlement_status()
 RETURNS trigger
