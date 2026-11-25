@@ -33,7 +33,6 @@ describe('Database-backed authorization edge cases', () => {
   it('isolates revisions and denies inactive website access', async () => {
     if (
       process.env.STATUS_INTEGRATION_TEST_MODE !== 'true' ||
-      process.env.STATUS_TEST_DB_HOST !== '127.0.0.1' ||
       process.env.STATUS_TEST_DB_PORT !== '55432' ||
       process.env.STATUS_TEST_DB_NAME !==
         'status_payment_concurrency_test'

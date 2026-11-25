@@ -110,10 +110,6 @@ describe('Publishing lifecycle', () => {
     ).toBe('true');
 
     expect(
-      process.env.STATUS_TEST_DB_HOST
-    ).toBe('127.0.0.1');
-
-    expect(
       process.env.STATUS_TEST_DB_PORT
     ).toBe('55432');
 

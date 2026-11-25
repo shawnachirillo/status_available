@@ -8,16 +8,16 @@
 | D. Hosting operations | Implement opt-in renewals, reminder schedule and customer-owned domains. Preserve protected data and route deletion policy for approval. | Own hosting operation migrations and services. Agree on renewal and management contracts before C integrates. |
 | E. Commercial readiness | Verify accessibility, security, staging, deploy triggers, rollback and customer documentation. | Read-only audits and docs can start in parallel. Staging and release acceptance depend on the applicable feature and provider gates. |
 
-Assign individual files and migration order before parallel implementation. Serialize use of the existing fixed-port database and HTTP fixtures. Use separate worktrees and isolated infrastructure for parallel stateful runs. Release sequencing and a commercial launch estimate depend on confirmed scope, staging access and provider triggers.
+Assign individual files and migration order before parallel implementation. Use separate worktrees. The unified runner gives each invocation its own PostgreSQL cluster and HTTP port and serializes stateful suites within each run. See [SA-004 assignments](PARALLEL_ASSIGNMENTS.md) for file ownership and integration order. Release sequencing and a commercial launch estimate depend on confirmed scope, staging access and provider triggers.
 
-## Planning estimate after hosting stabilization
+## Planning estimate after cloud-readiness preparation
 
 | Stream | Remaining engineering hours |
 | --- | ---: |
-| A. CI, clean fixtures, least-privilege staging and remaining security verification | 12–22 |
+| A. CI, clean fixtures, least-privilege staging and remaining security verification | 7–14 |
 | B. Purchase flow, checkout returns and onboarding | 20–36 |
 | C. Editor additions, media, previews, export and handoff | 42–75 |
 | D. Renewal, reminders, domains and retention operations | 36–65 |
 | E. Staging, accessibility, customer docs and release acceptance | 20–35 |
 
-Planning range: 130–233 engineering hours. This is effort, not elapsed time. External provider access, unresolved product decisions, and release authorization may extend elapsed time. Re-estimate once commercial terms, domain handoff, renewal operations and retention/recovery policy are specified.
+Planning range: 125–225 engineering hours. This is effort, not elapsed time. External provider access, unresolved product decisions, and release authorization may extend elapsed time. Re-estimate once commercial terms, domain handoff, renewal operations and retention/recovery policy are specified.

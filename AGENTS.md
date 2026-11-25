@@ -12,4 +12,4 @@ Use [PRODUCT_SPEC](docs/PRODUCT_SPEC.md) for approved behavior, [ARCHITECTURE](d
 
 Use the canonical PostgreSQL hosting predicates. Revalidate draft save and restore at the final authorized mutation. Acquire locks in the existing purchase, entitlement, website order where those rows are needed. Rejected writes must preserve draft, version, revisions and snapshots.
 
-Use only the approved loopback integration target in TESTING. Verify identity, schema, fixture and runtime role before mutation. Never use hosted credentials or execute unreviewed utilities.
+Use the private PostgreSQL verification runner in TESTING for local, Cloud and CI regressions. Verify identity, schema, fixtures and runtime grants before test mutations. The previously approved fixed loopback target is reserved for explicitly isolated legacy checks. Keep hosted credentials and unreviewed utilities out of all verification commands. Assign ownership and migration order using [PARALLEL_ASSIGNMENTS](docs/PARALLEL_ASSIGNMENTS.md).

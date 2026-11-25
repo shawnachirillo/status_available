@@ -1,6 +1,6 @@
 # Current architecture
 
-Next.js App Router, React, TypeScript and Tailwind render the storefront, Edition pages, registration and customer editor. Clerk protects the workspace. Node API handlers query PostgreSQL through server-only pg. Supabase migrations own the schema. The default database path points at a hosted pooler. Integration mode instead permits only the isolated local database.
+Next.js App Router, React, TypeScript and Tailwind render the storefront, Edition pages, registration and customer editor. Clerk protects the workspace. Node API handlers query PostgreSQL through server-only pg. Supabase migrations own the schema. The default database path points at a hosted pooler. Integration mode permits the verification runner’s private Unix socket or the explicitly configured legacy loopback target. The verification cluster starts empty and uses separate bootstrap and runtime roles.
 
 Stripe Checkout uses locked inventory reservations. Signed webhook events transition purchases and provision entitlements and a website; provider IDs, reconciliation and refund records support retries. The build rejects live Stripe keys.
 

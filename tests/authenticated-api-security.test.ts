@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeAll, describe, it, expect, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
@@ -11,6 +11,12 @@ vi.mock('@clerk/nextjs/server', () => ({
 import { GET as getDraft } from '../src/app/api/draft/route';
 import { GET as getRevisions } from '../src/app/api/draft/revisions/route';
 import { GET as getWebsites } from '../src/app/api/websites/route';
+
+beforeAll(() => {
+  if (process.env.STATUS_INTEGRATION_TEST_MODE !== 'true') {
+    throw new Error('Run authenticated API tests through the isolated verification runner');
+  }
+});
 
 describe('Authenticated API authorization', () => {
   it('rejects invalid website identifiers', async () => {
