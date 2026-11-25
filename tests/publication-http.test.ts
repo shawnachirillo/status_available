@@ -26,6 +26,8 @@ vi.mock('@clerk/nextjs/server', () => ({
 
 import { getDb } from '../src/lib/db';
 import { POST } from '../src/app/api/publish/route';
+import { PUT as saveDraft } from '../src/app/api/draft/route';
+import { POST as restoreDraft } from '../src/app/api/draft/restore/route';
 
 const execute = promisify(execFile);
 
@@ -54,6 +56,11 @@ const draft = {
 
 let verifiedDatabase = false;
 
+const httpPort = Number(process.env.STATUS_TEST_HTTP_PORT ?? '3001');
+if (!Number.isInteger(httpPort) || httpPort < 1 || httpPort > 65535) {
+  throw new Error('A valid publication HTTP test port is required');
+}
+
 async function request(path = '/', method = 'GET') {
   const result = await execute('curl', [
     '--noproxy', '*',
@@ -61,9 +68,9 @@ async function request(path = '/', method = 'GET') {
     '--max-time', '30',
     '-sS',
     '-X', method,
-    '-H', `Host: ${slug}.localhost:3001`,
+    '-H', `Host: ${slug}.localhost:${httpPort}`,
     '-w', '\n%{http_code}',
-    `http://localhost:3001${path}`
+    `http://127.0.0.1:${httpPort}${path}`
   ], {
     maxBuffer: 5 * 1024 * 1024
   });
@@ -525,9 +532,38 @@ it('verifies the complete public HTTP lifecycle', async () => {
   expect(graceResponse.status).toBe(200);
   expect(graceResponse.body).toContain(updated);
 
-  await publish(2);
+  const graceHeadline = `Grace-${suffix}`;
 
-  console.log('PASS: Grace-period website remains operational');
+  function draftRequest(path: string, method: string, body: object) {
+    return new Request(`http://localhost${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ websiteId, ...body })
+    });
+  }
+
+  const saved = await saveDraft(draftRequest('/api/draft', 'PUT', {
+    draft: { ...draft, headline: graceHeadline },
+    expectedVersion: 2
+  }));
+  expect(saved.status).toBe(200);
+
+  const gracePublication = await publish(3);
+  expect(gracePublication.unchanged).toBe(false);
+  expect(gracePublication.sourceDraftVersion).toBe(3);
+  expect((await request()).body).toContain(graceHeadline);
+
+  const stateQuery = `
+    SELECT w.draft_content, w.version, w.current_publication_id,
+      (SELECT count(*)::int FROM public.website_revisions
+       WHERE website_id = w.id) AS revisions,
+      (SELECT count(*)::int FROM public.website_publications
+       WHERE website_id = w.id) AS snapshots
+    FROM public.websites w WHERE w.id = $1
+  `;
+  const graceState = (await pool.query(stateQuery, [websiteId])).rows[0];
+
+  console.log('PASS: Grace-period edit and new snapshot delivered');
 
   await pool.query(`
     UPDATE public.websites
@@ -537,6 +573,8 @@ it('verifies the complete public HTTP lifecycle', async () => {
   `, [websiteId]);
 
   expect((await request()).status).toBe(404);
+
+  expect((await pool.query(stateQuery, [websiteId])).rows[0]).toEqual(graceState);
 
   console.log('PASS: Hosting suspension blocks public access');
 
@@ -555,7 +593,8 @@ it('verifies the complete public HTTP lifecycle', async () => {
     WHERE website_id = $1
   `, [websiteId]);
 
-  expect(retained.rows[0].count).toBe(2);
+  expect(retained.rows[0].count).toBe(3);
+  expect((await pool.query(stateQuery, [websiteId])).rows[0]).toEqual(graceState);
 
   console.log('PASS: Retention expiration preserves snapshots');
 
@@ -569,9 +608,13 @@ it('verifies the complete public HTTP lifecycle', async () => {
   expect((await request()).status).toBe(200);
 
   // Hold the refund transaction open while a
-  // concurrent publication waits for the purchase.
+  // concurrent website writes wait for the purchase.
   const refundClient = await pool.connect();
-  let pendingPublication: Promise<Response> | undefined;
+  let pendingWrites: Promise<Response>[] = [];
+  const revision = await pool.query(
+    'SELECT id FROM public.website_revisions WHERE website_id = $1',
+    [websiteId]
+  );
 
   try {
     await refundClient.query('BEGIN');
@@ -582,7 +625,7 @@ it('verifies the complete public HTTP lifecycle', async () => {
       WHERE id = $1
     `, [purchaseId]);
 
-    pendingPublication = POST(new Request(
+    pendingWrites = [POST(new Request(
       'http://localhost/api/publish',
       {
         method: 'POST',
@@ -591,30 +634,34 @@ it('verifies the complete public HTTP lifecycle', async () => {
         },
         body: JSON.stringify({
           websiteId,
-          expectedVersion: 2,
+          expectedVersion: 3,
           slug
         })
       }
-    ));
+    )), saveDraft(draftRequest('/api/draft', 'PUT', {
+      draft,
+      expectedVersion: 3
+    })), restoreDraft(draftRequest('/api/draft/restore', 'POST', {
+      revisionId: revision.rows[0].id,
+      expectedVersion: 3
+    }))];
 
     let waiting = false;
 
     for (let attempt = 0; attempt < 100; attempt++) {
       await refundClient.query('SELECT pg_stat_clear_snapshot()');
       const activity = await refundClient.query(`
-        SELECT EXISTS (
-          SELECT 1
+        SELECT (
+          SELECT count(*)::int
           FROM pg_stat_activity
           WHERE datname = current_database()
             AND pid <> pg_backend_pid()
             AND wait_event_type = 'Lock'
             AND query LIKE '%FOR UPDATE OF p%'
-            AND pg_backend_pid() =
-                ANY(pg_blocking_pids(pid))
         ) AS waiting
       `);
 
-      if (activity.rows[0].waiting) {
+      if (activity.rows[0].waiting === pendingWrites.length) {
         waiting = true;
         break;
       }
@@ -626,15 +673,16 @@ it('verifies the complete public HTTP lifecycle', async () => {
 
     expect(waiting).toBe(true);
 
-    console.log('PASS: Publication waits for refund transaction');
+    console.log('PASS: Publish, save and restore wait for the refund transaction');
 
     await refundClient.query('COMMIT');
 
-    const rejected = await pendingPublication;
+    const rejected = await Promise.all(pendingWrites);
 
-    expect(rejected.status).toBe(404);
+    expect(rejected.map(response => response.status)).toEqual([404, 404, 404]);
+    expect((await pool.query(stateQuery, [websiteId])).rows[0]).toEqual(graceState);
 
-    console.log('PASS: Concurrent publication rejected after refund');
+    console.log('PASS: Concurrent publish, save and restore rejected after refund');
 
     const finalState = await pool.query(`
       SELECT
@@ -656,18 +704,16 @@ it('verifies the complete public HTTP lifecycle', async () => {
     expect(finalState.rows[0]).toEqual({
       purchase_status: 'refunded',
       entitlement_status: 'suspended',
-      snapshots: 2
+      snapshots: 3
     });
 
     console.log('PASS: Refund and entitlement remain consistent');
-    console.log('PASS: Refund race creates no additional snapshot');
+    console.log('PASS: Refund race preserves draft, revisions and snapshots');
 
   } finally {
     await refundClient.query('ROLLBACK').catch(() => {});
 
-    if (pendingPublication) {
-      await pendingPublication.catch(() => {});
-    }
+    await Promise.allSettled(pendingWrites);
 
     refundClient.release();
   }
@@ -1169,9 +1215,9 @@ it('verifies the complete public HTTP lifecycle', async () => {
         '--connect-timeout', '5',
         '--max-time', '30',
         '-sS',
-        '-H', `Host: ${targetSlug}.localhost:3001`,
+        '-H', `Host: ${targetSlug}.localhost:${httpPort}`,
         '-w', '\\n%{http_code}',
-        'http://localhost:3001/'
+        `http://127.0.0.1:${httpPort}/`
       ]);
 
       expect(publicResponse.stdout.trim().endsWith('404'))

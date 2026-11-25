@@ -2,7 +2,8 @@ import { auth } from '@clerk/nextjs/server';
 import { getDb } from '../../../lib/db';
 import {
   validWebsiteId,
-  findEditableWebsite
+  findEditableWebsite,
+  lockWebsiteOwnership
 } from '../../../lib/websites/authorization';
 import { validDraft } from '../../../lib/draft-validation';
 import {
@@ -71,35 +72,7 @@ export async function POST(request: Request) {
       return reply({ error: message }, status);
     }
 
-    // Lock purchase, entitlement and website in that order.
-    // Payment-status transitions must not race publication.
-    const purchase = await client.query(`
-      SELECT p.id
-      FROM public.purchases p
-      JOIN public.entitlements e
-        ON e.purchase_id = p.id
-      JOIN public.websites w
-        ON w.entitlement_id = e.id
-      WHERE w.id = $1::uuid
-        AND w.owner_clerk_user_id = $2
-      FOR UPDATE OF p
-    `, [websiteId, userId]);
-
-    if (purchase.rowCount !== 1) {
-      return await reject('Website not found', 404);
-    }
-
-    const entitlement = await client.query(`
-      SELECT e.id
-      FROM public.entitlements e
-      JOIN public.websites w
-        ON w.entitlement_id = e.id
-      WHERE w.id = $1::uuid
-        AND w.owner_clerk_user_id = $2
-      FOR UPDATE OF e
-    `, [websiteId, userId]);
-
-    if (entitlement.rowCount !== 1) {
+    if (!(await lockWebsiteOwnership(client, websiteId, userId))) {
       return await reject('Website not found', 404);
     }
 

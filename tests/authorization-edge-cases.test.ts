@@ -164,6 +164,7 @@ describe('Database-backed authorization edge cases', () => {
 
       // Route transactions use savepoints so they cannot
       // commit or roll back the outer fixture transaction.
+      let expireAtFinalWrite = false;
       const routeClient = {
         query: async (sql: string, params?: unknown[]) => {
           const command = sql.trim().toUpperCase();
@@ -186,6 +187,14 @@ describe('Database-backed authorization edge cases', () => {
             return client.query(
               'RELEASE SAVEPOINT route_transaction'
             );
+          }
+
+          if (expireAtFinalWrite && sql.includes('UPDATE public.websites AS w')) {
+            await client.query(`
+              UPDATE public.websites
+              SET hosting_ends_at = clock_timestamp() - interval '720 hours'
+              WHERE id = $1
+            `, [a.websiteId]);
           }
 
           return client.query(sql, params);
@@ -330,7 +339,35 @@ describe('Database-backed authorization edge cases', () => {
 
       expect((await readDraft(a.websiteId)).status).toBe(200);
 
-      // Expired hosting.
+      // Move the cutoff inside the route transaction after its locking read.
+      // The test is deterministic and rolls back the injected change with the route.
+      await client.query(`
+        UPDATE public.websites
+        SET hosting_starts_at = now() - interval '2 years',
+            hosting_ends_at = now() - interval '1 day'
+        WHERE id = $1
+      `, [a.websiteId]);
+
+      expect((await readDraft(a.websiteId)).status).toBe(200);
+      expect((await history(a.websiteId)).status).toBe(200);
+      const graceListing = await getWebsites();
+      expect(graceListing.status).toBe(200);
+      expect((await graceListing.json()).websites.map((w: { id: string }) => w.id))
+        .toContain(a.websiteId);
+
+      await client.query('SAVEPOINT grace_restore');
+      const graceRestore = await restoreA(a.revisionId);
+      expect(graceRestore.status).toBe(200);
+      expect((await graceRestore.json()).version).toBe(2);
+      await client.query('ROLLBACK TO SAVEPOINT grace_restore');
+
+      expireAtFinalWrite = true;
+      expect((await saveA()).status).toBe(404);
+      expect((await restoreA(a.revisionId)).status).toBe(404);
+      expireAtFinalWrite = false;
+      expect(await snapshot()).toEqual(baseline);
+
+      // Suspended hosting.
       await client.query(`
         UPDATE public.websites
         SET hosting_starts_at = now() - interval '2 years',
@@ -342,7 +379,7 @@ describe('Database-backed authorization edge cases', () => {
 
       expect(await snapshot()).toEqual(baseline);
 
-      console.log('PASS: Expired hosting denied across APIs');
+      console.log('PASS: Suspended hosting denied across APIs');
       console.log('PASS: Unaffected website remains accessible');
       console.log('PASS: Rejected mutations preserve stored data');
 

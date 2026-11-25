@@ -57,8 +57,9 @@ describe('Cross-account website isolation', () => {
          AND e.status = 'active'
          AND p.status = 'paid'
          AND w.publication_status IN ('draft', 'published')
-         AND w.hosting_starts_at <= now()
-         AND w.hosting_ends_at > now()
+         AND public.website_hosting_operational(
+           w.hosting_starts_at, w.hosting_ends_at, clock_timestamp()
+         )
        ORDER BY w.created_at DESC
        LIMIT 1`
     );
@@ -144,8 +145,9 @@ describe('Purchased Edition and version protections', () => {
          AND e.status = 'active'
          AND p.status = 'paid'
          AND w.publication_status = 'draft'
-         AND w.hosting_starts_at <= now()
-         AND w.hosting_ends_at > now()
+         AND public.website_hosting_operational(
+           w.hosting_starts_at, w.hosting_ends_at, clock_timestamp()
+         )
        ORDER BY w.created_at DESC LIMIT 1`
     );
 
@@ -236,8 +238,9 @@ describe('Revision restoration isolation', () => {
          AND e.status = 'active'
          AND p.status = 'paid'
          AND w.publication_status IN ('draft', 'published')
-         AND w.hosting_starts_at <= now()
-         AND w.hosting_ends_at > now()
+         AND public.website_hosting_operational(
+           w.hosting_starts_at, w.hosting_ends_at, clock_timestamp()
+         )
        LIMIT 1`
     );
 

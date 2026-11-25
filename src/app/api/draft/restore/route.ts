@@ -3,7 +3,9 @@ import { NextResponse } from 'next/server';
 import { getDb } from '../../../../lib/db';
 import { validDraft } from '../../../../lib/draft-validation';
 import {
+  editableWebsiteEligibility,
   findEditableWebsite,
+  lockWebsiteOwnership,
   validWebsiteId
 } from '../../../../lib/websites/authorization';
 
@@ -68,6 +70,15 @@ export async function POST(request: Request) {
   try {
     await client.query('BEGIN');
 
+    if (!(await lockWebsiteOwnership(client, websiteId, userId))) {
+      await client.query('ROLLBACK');
+
+      return NextResponse.json(
+        { error: 'Website not found' },
+        { status: 404 }
+      );
+    }
+
     const website = await findEditableWebsite(
       client,
       websiteId,
@@ -131,7 +142,7 @@ export async function POST(request: Request) {
     }
 
     const updated = await client.query(
-      `UPDATE public.websites
+      `UPDATE public.websites AS w
        SET name = $2,
            draft_content = $3::jsonb,
            version = version + 1,
@@ -139,6 +150,7 @@ export async function POST(request: Request) {
        WHERE id = $1::uuid
          AND owner_clerk_user_id = $4
          AND version = $5
+         AND ${editableWebsiteEligibility}
        RETURNING id`,
       [
         websiteId,
@@ -150,7 +162,12 @@ export async function POST(request: Request) {
     );
 
     if (updated.rowCount !== 1) {
-      throw new Error('Website restore was not confirmed');
+      await client.query('ROLLBACK');
+
+      return NextResponse.json(
+        { error: 'Website not found' },
+        { status: 404 }
+      );
     }
 
     await client.query(

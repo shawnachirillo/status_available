@@ -226,6 +226,48 @@ describe('Publishing lifecycle', () => {
     await getDb().end();
   });
 
+  it('enforces the exact hosting boundaries and invalid terms', async () => {
+    const result = await client.query(`
+      WITH term AS (
+        SELECT '2026-01-01T00:00:00Z'::timestamptz AS starts_at,
+               '2027-01-01T00:00:00Z'::timestamptz AS ends_at
+      ), cases AS (
+        SELECT * FROM term CROSS JOIN LATERAL (VALUES
+          (1, starts_at - interval '1 microsecond'),
+          (2, starts_at),
+          (3, ends_at - interval '1 microsecond'),
+          (4, ends_at),
+          (5, ends_at + interval '720 hours' - interval '1 microsecond'),
+          (6, ends_at + interval '720 hours'),
+          (7, ends_at + interval '2880 hours' - interval '1 microsecond'),
+          (8, ends_at + interval '2880 hours'),
+          (9, NULL::timestamptz)
+        ) AS boundary(id, evaluated_at)
+        UNION ALL SELECT NULL, ends_at, 10, starts_at FROM term
+        UNION ALL SELECT starts_at, NULL, 11, starts_at FROM term
+        UNION ALL SELECT starts_at, starts_at, 12, starts_at FROM term
+      )
+      SELECT public.website_hosting_state(starts_at, ends_at, evaluated_at) AS state,
+             public.website_hosting_operational(starts_at, ends_at, evaluated_at) AS operational
+      FROM cases ORDER BY id
+    `);
+
+    expect(result.rows).toEqual([
+      { state: 'scheduled', operational: false },
+      { state: 'active', operational: true },
+      { state: 'active', operational: true },
+      { state: 'grace', operational: true },
+      { state: 'grace', operational: true },
+      { state: 'suspended', operational: false },
+      { state: 'suspended', operational: false },
+      { state: 'retention_expired', operational: false },
+      { state: 'unallocated', operational: false },
+      { state: 'unallocated', operational: false },
+      { state: 'unallocated', operational: false },
+      { state: 'unallocated', operational: false }
+    ]);
+  });
+
   it('rejects anonymous publication', async () => {
     identity.userId = null;
 
