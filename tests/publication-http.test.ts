@@ -379,15 +379,18 @@ it('verifies the complete public HTTP lifecycle', async () => {
   console.log('PASS: Republished content delivered');
 
   // Force an idempotent publication request to wait
-  // for a website lock until hosting has expired.
+  // for a website lock until the hosting grace period ends.
   const blocker = await pool.connect();
   let pending: Promise<Response> | undefined;
 
   try {
     await pool.query(`
       UPDATE public.websites
-      SET hosting_ends_at =
-        clock_timestamp() + interval '5 seconds'
+      SET hosting_starts_at =
+        clock_timestamp() - interval '2 years',
+          hosting_ends_at =
+        clock_timestamp() - interval '720 hours'
+          + interval '5 seconds'
       WHERE id = $1
     `, [websiteId]);
 
@@ -461,8 +464,8 @@ it('verifies the complete public HTTP lifecycle', async () => {
     expect(snapshots.rows[0].count).toBe(2);
     expect((await request()).status).toBe(404);
 
-    console.log('PASS: Hosting expired during verified lock wait');
-    console.log('PASS: Expired idempotent publication rejected');
+    console.log('PASS: Hosting suspended during verified lock wait');
+    console.log('PASS: Suspended idempotent publication rejected');
     console.log('PASS: No additional snapshot created');
 
   } finally {
@@ -517,9 +520,44 @@ it('verifies the complete public HTTP lifecycle', async () => {
     WHERE id = $1
   `, [websiteId]);
 
+  const graceResponse = await request();
+
+  expect(graceResponse.status).toBe(200);
+  expect(graceResponse.body).toContain(updated);
+
+  await publish(2);
+
+  console.log('PASS: Grace-period website remains operational');
+
+  await pool.query(`
+    UPDATE public.websites
+    SET hosting_ends_at =
+      clock_timestamp() - interval '31 days'
+    WHERE id = $1
+  `, [websiteId]);
+
   expect((await request()).status).toBe(404);
 
-  console.log('PASS: Expired website inaccessible');
+  console.log('PASS: Hosting suspension blocks public access');
+
+  await pool.query(`
+    UPDATE public.websites
+    SET hosting_ends_at =
+      clock_timestamp() - interval '121 days'
+    WHERE id = $1
+  `, [websiteId]);
+
+  expect((await request()).status).toBe(404);
+
+  const retained = await pool.query(`
+    SELECT count(*)::int AS count
+    FROM public.website_publications
+    WHERE website_id = $1
+  `, [websiteId]);
+
+  expect(retained.rows[0].count).toBe(2);
+
+  console.log('PASS: Retention expiration preserves snapshots');
 
   await pool.query(`
     UPDATE public.websites

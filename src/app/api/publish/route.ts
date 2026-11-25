@@ -274,8 +274,11 @@ export async function POST(request: Request) {
       WHERE id = $3::uuid
         AND owner_clerk_user_id = $4
         AND version = $5
-        AND hosting_starts_at <= clock_timestamp()
-        AND hosting_ends_at > clock_timestamp()
+        AND public.website_hosting_operational(
+          hosting_starts_at,
+          hosting_ends_at,
+          clock_timestamp()
+        )
       RETURNING id
     `, [
       publicSlug,

@@ -469,7 +469,7 @@ describe('Publishing lifecycle', () => {
       .toBe('Updated draft headline');
   });
 
-  it('blocks public access when hosting expires', async () => {
+  it('permits grace access and blocks suspended hosting', async () => {
     await client.query('SAVEPOINT public_expiry');
 
     try {
@@ -482,7 +482,28 @@ describe('Publishing lifecycle', () => {
         WHERE id = $1
       `, [firstWebsite]);
 
+      expect(await getPublicWebsite(slug)).not.toBeNull();
+
+      expect(
+        (await publish(firstWebsite, 2)).status
+      ).toBe(200);
+
+      expect(await snapshotCount(firstWebsite)).toBe(2);
+
+      await client.query(`
+        UPDATE public.websites
+        SET hosting_ends_at =
+          clock_timestamp() - interval '31 days'
+        WHERE id = $1
+      `, [firstWebsite]);
+
       expect(await getPublicWebsite(slug)).toBeNull();
+
+      expect(
+        (await publish(firstWebsite, 2)).status
+      ).toBe(404);
+
+      expect(await snapshotCount(firstWebsite)).toBe(2);
 
     } finally {
       await client.query(
@@ -501,6 +522,16 @@ describe('Publishing lifecycle', () => {
     await client.query('SAVEPOINT public_refund');
 
     try {
+      await client.query(`
+        UPDATE public.websites
+        SET hosting_starts_at =
+              now() - interval '2 years',
+            hosting_ends_at =
+              now() - interval '1 day'
+        WHERE id = $1
+      `, [firstWebsite]);
+
+      expect(await getPublicWebsite(slug)).not.toBeNull();
       await client.query(`
         UPDATE public.purchases
         SET status = 'refunded'
@@ -615,13 +646,13 @@ describe('Publishing lifecycle', () => {
     expect(await getPublicWebsite(slug)).toBeNull();
   });
 
-  it('denies publication after hosting expires', async () => {
+  it('denies publication after hosting grace ends', async () => {
     await client.query(`
       UPDATE public.websites
       SET hosting_starts_at =
             now() - interval '2 years',
           hosting_ends_at =
-            now() - interval '1 day'
+            now() - interval '31 days'
       WHERE id = $1
     `, [secondWebsite]);
 

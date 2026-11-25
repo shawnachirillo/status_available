@@ -63,8 +63,11 @@ export async function GET(request: Request) {
          AND e.status = 'active'
          AND p.status = 'paid'
          AND w.publication_status IN ('draft', 'published')
-         AND w.hosting_starts_at <= now()
-         AND w.hosting_ends_at > now()
+         AND public.website_hosting_operational(
+           w.hosting_starts_at,
+           w.hosting_ends_at,
+           clock_timestamp()
+         )
        ORDER BY r.created_at DESC, r.id DESC
        LIMIT 50`,
       [websiteId, userId]

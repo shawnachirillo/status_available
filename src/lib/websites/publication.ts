@@ -41,8 +41,11 @@ export async function getPublicWebsite(slug: string) {
       AND w.publication_status = 'published'
       AND e.status = 'active'
       AND p.status = 'paid'
-      AND w.hosting_starts_at <= clock_timestamp()
-      AND w.hosting_ends_at > clock_timestamp()
+      AND public.website_hosting_operational(
+        w.hosting_starts_at,
+        w.hosting_ends_at,
+        clock_timestamp()
+      )
 
     LIMIT 1
   `, [slug]);
